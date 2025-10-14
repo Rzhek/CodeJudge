@@ -10,7 +10,7 @@ import difflib
 import textwrap
 import time
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional
 
 # ---------------- Colors ----------------
 class Color:
@@ -79,7 +79,6 @@ def pair_tests(inputs: List[Path], outputs: List[Path]) -> List[Tuple[Path, Path
                     used_out.add(outp)
                     break
 
-    # Try multiple matching strategies
     try_match(lambda p: p.stem.lower())
     try_match(num_key)
     try_match(stem_key)
@@ -99,7 +98,6 @@ def pair_tests(inputs: List[Path], outputs: List[Path]) -> List[Tuple[Path, Path
             print(color("\n[warn] Unmatched outputs:", Color.YELLOW))
             for o in remaining_out:
                 print("   •", o)
-
     return pairs
 
 # ---------------- Compile & run ----------------
@@ -128,13 +126,33 @@ def run_case(bin_path: Path, input_path: Path, timeout_sec: float = 2.0):
         except subprocess.TimeoutExpired:
             return 124, "", f"TIMEOUT after {timeout_sec}s", timeout_sec
 
-# ---------------- Comparison (ignoring whitespace) ----------------
+# ---------------- Comparison ----------------
 def normalize_text(s: str) -> str:
     lines = [re.sub(r"\s+", " ", line.strip()) for line in s.splitlines()]
     return "\n".join(line for line in lines if line.strip())
 
-def compare_outputs(expected: str, got: str) -> bool:
-    return normalize_text(expected) == normalize_text(got)
+def float_equal(a: str, b: str, eps: float) -> bool:
+    try:
+        return abs(float(a) - float(b)) <= eps or abs(float(a)-float(b)) / abs(float(a)) <= eps
+    except ValueError:
+        return False
+
+def compare_outputs(expected: str, got: str, eps: float) -> bool:
+    a_lines = normalize_text(expected).splitlines()
+    b_lines = normalize_text(got).splitlines()
+    if len(a_lines) != len(b_lines):
+        return False
+    for x, y in zip(a_lines, b_lines):
+        ax, ay = x.split(), y.split()
+        if len(ax) != len(ay):
+            return False
+        for tok1, tok2 in zip(ax, ay):
+            if tok1 == tok2:
+                continue
+            if eps > 0 and float_equal(tok1, tok2, eps):
+                continue
+            return False
+    return True
 
 def print_diff(expected: str, got: str, expected_name: str, got_name: str):
     diff = difflib.unified_diff(
@@ -159,6 +177,7 @@ def main():
     parser.add_argument("test_folder", help="Folder containing .in/.out files (recursively)")
     parser.add_argument("--std", default="c++17", help="C++ standard (default: c++17)")
     parser.add_argument("--timeout", type=float, default=2.0, help="Timeout per test (seconds)")
+    parser.add_argument("--eps", type=float, default=1e-6, help="Epsilon for float comparison (default: 1e-6; use 0 for exact)")
     args = parser.parse_args()
 
     cpp = Path(args.cpp_file).resolve()
@@ -186,13 +205,14 @@ def main():
         print(color("[error] Could not match any input/output pairs.", Color.RED))
         sys.exit(1)
 
-    print(color(f"\n[info] Found {len(pairs)} test case(s).\n", Color.CYAN))
+    print(color(f"\n[info] Found {len(pairs)} test case(s).", Color.CYAN))
+    print(color(f"[info] Epsilon tolerance: {args.eps}\n", Color.CYAN))
     passed = 0
 
     for i, (inp, outp) in enumerate(pairs, 1):
         exp = outp.read_text(encoding="utf-8", errors="replace")
         code, got, err, secs = run_case(bin_path, inp, args.timeout)
-        ok = (code == 0 and compare_outputs(exp, got))
+        ok = (code == 0 and compare_outputs(exp, got, args.eps))
         status = "PASS" if ok else "FAIL"
 
         print(f"=== Case {i}/{len(pairs)} :: {inp.name} → {outp.name} :: {status_text(status)}  ({secs:.3f}s)")
